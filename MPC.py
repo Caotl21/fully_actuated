@@ -22,13 +22,16 @@ config = Config()
 
 # ================== 轨迹生成 ==================
 def generate_ref_traj(t):
-    omega = 2 * np.pi / config.sim_time
-    x_ref = config.traj_scale * np.sin(omega * t)
-    y_ref = config.traj_scale * np.sin(2 * omega * t)
-    dx_ref = config.traj_scale * omega * np.cos(omega * t)
-    dy_ref = 2 * config.traj_scale * omega * np.cos(2 * omega * t)
-    ddx_ref = -config.traj_scale * omega**2 * np.sin(omega * t)
-    ddy_ref = -4 * config.traj_scale * omega**2 * np.sin(2 * omega * t)
+    # 圆形轨迹 (半径3m，周期8s)
+    R = 3.0
+    omega = 2*np.pi/8
+    x_ref = R * np.cos(omega * t)
+    y_ref = R * np.sin(omega * t)
+    dx_ref = -R*omega*np.sin(omega*t)
+    dy_ref = R*omega*np.cos(omega*t)
+    ddx_ref = -R*omega**2*np.cos(omega*t)
+    ddy_ref = -R*omega**2*np.sin(omega*t)
+    
     return x_ref, y_ref, dx_ref, dy_ref, ddx_ref, ddy_ref
 
 t = np.arange(0, config.sim_time, config.Ts)
