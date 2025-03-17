@@ -121,7 +121,7 @@ D_delta = np.array([    [0, 0],
 
 # ================== 扰动观测器 ==================
 class DisturbanceObserver:
-    def __init__(self):
+    '''def __init__(self):
         self.d_hat = np.zeros(2)
         self.prev_error = np.zeros(2)
         self.d_hat_history = []
@@ -132,7 +132,23 @@ class DisturbanceObserver:
         self.d_hat = alpha * self.d_hat + (1-alpha) * (error - self.prev_error)/dt
         self.prev_error = error
         self.d_hat_history.append(self.d_hat.copy()) 
+        return self.d_hat'''
+    
+    def __init__(self):
+        self.d_hat = np.zeros(2)
+        self.sigma = np.zeros(2)
+        self.L = 5.0  # 滑模增益
+        self.d_hat_history = []
+    
+    def update(self, e, de, dt = Ts):
+        # 滑模面设计
+        s = de + self.L * e
+        # 等效控制法
+        self.d_hat = np.clip(-self.L * e - self.sigma, -10, 10)
+        self.sigma += self.L * self.d_hat * dt
+        self.d_hat_history.append(self.d_hat.copy()) 
         return self.d_hat
+
     
     def get_history(self):
         """返回历史记录为 NumPy 数组"""
@@ -198,6 +214,7 @@ class RobustMPC:
 # ================== 仿真初始化 ==================
 mpc = RobustMPC()
 xi = np.zeros(5)  # [e_x, Δe_x, e_y, Δe_y, I_e]
+prev_error = np.zeros(2)
 
 # 存储数据
 x_hist, y_hist = [], []
@@ -224,7 +241,10 @@ for k in range(len(t)):
     
     # 求解MPC
     current_error = np.array([xi[0], xi[2]])
-    d_hat = mpc.obs.update(current_error, mpc.u_prev)
+    de = (current_error - prev_error) / Ts  # 误差的导数
+    prev_error = current_error  # 更新 prev_error
+    #d_hat = mpc.obs.update(current_error, mpc.u_prev)   #一阶观测器
+    d_hat = mpc.obs.update(current_error, de)   #滑模观测器
     u_opt = mpc.solve(xi, xi_ref, d_hat)
     
     # 施加扰动 (5-6秒)
@@ -272,6 +292,7 @@ for k in range(len(t)):
         plt.plot(t[:k+1], np.array(e_hist)+epsilon, label='Squared Error')
         plt.yscale('log')
         plt.title('Tracking Error')
+        plt.legend()
         
         # 控制输入
         plt.subplot(2, 2, 3)
@@ -279,6 +300,7 @@ for k in range(len(t)):
         plt.plot(t[:k+1], np.array(u_hist)[:,1], label='w2')
         plt.ylim([-3.5, 3.5])
         plt.title('Control Inputs')
+        plt.legend()
         
         # 扰动估计
         d_hat_history = mpc.obs.get_history()
@@ -286,6 +308,7 @@ for k in range(len(t)):
         plt.plot(t[:k+1], d_hat_history[:,0], label='d_x')
         plt.plot(t[:k+1], d_hat_history[:,1], label='d_y')
         plt.title('Disturbance Estimation')
+        plt.legend()
         
         plt.tight_layout()
         plt.pause(0.001)
