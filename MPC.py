@@ -11,8 +11,8 @@ class Config:
     Q = np.diag([50, 5, 50, 5, 0.1])
     R = np.diag([0.05, 0.05])
     S = np.diag([1, 1])
-    w_max = np.array([2.0, 1.5])
-    delta_w_max = 0.5
+    w_max = np.array([3.0, 2.0])
+    delta_w_max = 1.0
     e_max = 0.3
     I_max = 1.0
     sim_time = 20.0
