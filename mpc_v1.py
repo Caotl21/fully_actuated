@@ -13,7 +13,7 @@ class TrajectoryType(Enum):
 # ================== 参数设置 ==================
 # 车辆参数
 L = 0.6          # 舵轮轴距 (m)
-phi_max = np.deg2rad(45)  # 最大转向角
+phi_max = np.deg2rad(30)  # 最大转向角
 Ts = 0.05        # 缩短采样时间
 
 # MPC参数
@@ -28,11 +28,6 @@ w_max = np.array([3.0, 2.0])        # 放宽输入限制
 delta_w_max = 1.0                   # 放宽输入增量
 e_max = 0.3                        
 I_max = 1.0                        
-
-# 仿真参数
-sim_time = 30.0                    
-t = np.arange(0, sim_time, Ts)
-selected_traj = TrajectoryType.DOUBLE_LANE
 
 # ================== 轨迹生成器 ==================  
 def generate_reference(traj_type, t):
@@ -83,9 +78,6 @@ def generate_reference(traj_type, t):
         print("警告：轨迹包含不可达点！")
 
     return x, y, dx, dy, ddx, ddy
-
-
-x_ref, y_ref, dx_ref, dy_ref, ddx_ref, ddy_ref = generate_reference(selected_traj, t)
 
 # ================== 模型离散化 ==================
 def discretize(A, B, dt):
@@ -211,107 +203,113 @@ class RobustMPC:
         except:
             return np.zeros(2)
 
-# ================== 仿真初始化 ==================
-mpc = RobustMPC()
-xi = np.zeros(5)  # [e_x, Δe_x, e_y, Δe_y, I_e]
-prev_error = np.zeros(2)
+# ================== 主程序 ==================
+if __name__ == "__main__":
+# 仿真参数
+    sim_time = 30.0                    
+    t = np.arange(0, sim_time, Ts)
+    selected_traj = TrajectoryType.DOUBLE_LANE
+    x_ref, y_ref, dx_ref, dy_ref, ddx_ref, ddy_ref = generate_reference(selected_traj, t)
+    mpc = RobustMPC()
+    xi = np.zeros(5)  # [e_x, Δe_x, e_y, Δe_y, I_e]
+    prev_error = np.zeros(2)
 
 # 存储数据
-x_hist, y_hist = [], []
-u_hist, e_hist = [], []
+    x_hist, y_hist = [], []
+    u_hist, e_hist = [], []
 
 # 实时绘图设置
-plt.ion()
-fig = plt.figure(figsize=(15, 10))
+    plt.ion()
+    fig = plt.figure(figsize=(15, 10))
 
 # ================== 主循环 ==================
-for k in range(len(t)):
-    # 参考轨迹生成
-    xi_ref = np.zeros((N, 5))
-    for i in range(N):
-        if k+i < len(t):
-            # 积分项计算
-            if k+i > 0 and len(x_hist) >= k+i:
-                I_e = np.sum(x_ref[:k+i] - x_hist[:k+i]) + np.sum(y_ref[:k+i] - y_hist[:k+i])
-                I_e = np.clip(I_e, -I_max, I_max)
-            else:
-                I_e = 0
+    for k in range(len(t)):
+        # 参考轨迹生成
+        xi_ref = np.zeros((N, 5))
+        for i in range(N):
+            if k+i < len(t):
+                # 积分项计算
+                if k+i > 0 and len(x_hist) >= k+i:
+                    I_e = np.sum(x_ref[:k+i] - x_hist[:k+i]) + np.sum(y_ref[:k+i] - y_hist[:k+i])
+                    I_e = np.clip(I_e, -I_max, I_max)
+                else:
+                    I_e = 0
+                
+                xi_ref[i] = [0, 0, 0, 0, I_e]
+        
+        # 求解MPC
+        current_error = np.array([xi[0], xi[2]])
+        de = (current_error - prev_error) / Ts  # 误差的导数
+        prev_error = current_error  # 更新 prev_error
+        #d_hat = mpc.obs.update(current_error, mpc.u_prev)   #一阶观测器
+        d_hat = mpc.obs.update(current_error, de)   #滑模观测器
+        u_opt = mpc.solve(xi, xi_ref, d_hat)
+        
+        # 施加扰动 (5-6秒)
+        #if 5.0 <= t[k] < 6.0:
+        #    u_opt += np.array([0, 0.8])
+        
+        # 前馈补偿
+        u_ff = np.array([ddx_ref[k], ddy_ref[k]])
+        u_total = u_opt + 0.5*u_ff  # 前馈增益
+        
+        # 状态更新
+        xi_next = A_delta @ xi + B_delta @ u_total + D_delta @ np.array([ddx_ref[k], ddy_ref[k]])
+        
+        # 积分抗饱和
+        if np.linalg.norm([xi[0], xi[2]]) < 0.2:
+            xi_next[4] = np.clip(xi[4] + Ts*(xi[0]+xi[2]), -I_max, I_max)
+        else:
+            xi_next[4] = 0
+        
+        # 记录数据
+        x_hist.append(x_ref[k] + xi[0])
+        y_hist.append(y_ref[k] + xi[2])
+        u_hist.append(u_total)
+        e_hist.append(xi[0]**2 + xi[2]**2)
+        
+        # 更新状态
+        xi = xi_next
+        mpc.u_prev = u_total
+        
+        # 实时绘图
+        if k % 10 == 0:
+            plt.clf()
             
-            xi_ref[i] = [0, 0, 0, 0, I_e]
-    
-    # 求解MPC
-    current_error = np.array([xi[0], xi[2]])
-    de = (current_error - prev_error) / Ts  # 误差的导数
-    prev_error = current_error  # 更新 prev_error
-    #d_hat = mpc.obs.update(current_error, mpc.u_prev)   #一阶观测器
-    d_hat = mpc.obs.update(current_error, de)   #滑模观测器
-    u_opt = mpc.solve(xi, xi_ref, d_hat)
-    
-    # 施加扰动 (5-6秒)
-    if 5.0 <= t[k] < 6.0:
-        u_opt += np.array([0, 0.8])
-    
-    # 前馈补偿
-    u_ff = np.array([ddx_ref[k], ddy_ref[k]])
-    u_total = u_opt + 0.5*u_ff  # 前馈增益
-    
-    # 状态更新
-    xi_next = A_delta @ xi + B_delta @ u_total + D_delta @ np.array([ddx_ref[k], ddy_ref[k]])
-    
-    # 积分抗饱和
-    if np.linalg.norm([xi[0], xi[2]]) < 0.2:
-        xi_next[4] = np.clip(xi[4] + Ts*(xi[0]+xi[2]), -I_max, I_max)
-    else:
-        xi_next[4] = 0
-    
-    # 记录数据
-    x_hist.append(x_ref[k] + xi[0])
-    y_hist.append(y_ref[k] + xi[2])
-    u_hist.append(u_total)
-    e_hist.append(xi[0]**2 + xi[2]**2)
-    
-    # 更新状态
-    xi = xi_next
-    mpc.u_prev = u_total
-    
-    # 实时绘图
-    if k % 10 == 0:
-        plt.clf()
-        
-        # 轨迹跟踪
-        plt.subplot(2, 2, 1)
-        plt.plot(x_ref, y_ref, 'r--', label='Reference')
-        plt.plot(x_hist, y_hist, 'b-', label='Actual')
-        plt.plot(xi_ref[:,0]+x_ref[k], xi_ref[:,2]+y_ref[k], 'g.', markersize=4, label='Predicted')
-        plt.title(f'Tracking @ t={t[k]:.1f}s')
-        plt.legend()
-        
-        # 误差分析
-        plt.subplot(2, 2, 2)
-        epsilon = 1e-6
-        plt.plot(t[:k+1], np.array(e_hist)+epsilon, label='Squared Error')
-        plt.yscale('log')
-        plt.title('Tracking Error')
-        plt.legend()
-        
-        # 控制输入
-        plt.subplot(2, 2, 3)
-        plt.plot(t[:k+1], np.array(u_hist)[:,0], label='w1')
-        plt.plot(t[:k+1], np.array(u_hist)[:,1], label='w2')
-        plt.ylim([-3.5, 3.5])
-        plt.title('Control Inputs')
-        plt.legend()
-        
-        # 扰动估计
-        d_hat_history = mpc.obs.get_history()
-        plt.subplot(2, 2, 4)
-        plt.plot(t[:k+1], d_hat_history[:,0], label='d_x')
-        plt.plot(t[:k+1], d_hat_history[:,1], label='d_y')
-        plt.title('Disturbance Estimation')
-        plt.legend()
-        
-        plt.tight_layout()
-        plt.pause(0.001)
+            # 轨迹跟踪
+            plt.subplot(2, 2, 1)
+            plt.plot(x_ref, y_ref, 'r--', label='Reference')
+            plt.plot(x_hist, y_hist, 'b-', label='Actual')
+            plt.plot(xi_ref[:,0]+x_ref[k], xi_ref[:,2]+y_ref[k], 'g.', markersize=4, label='Predicted')
+            plt.title(f'Tracking @ t={t[k]:.1f}s')
+            plt.legend()
+            
+            # 误差分析
+            plt.subplot(2, 2, 2)
+            epsilon = 1e-6
+            plt.plot(t[:k+1], np.array(e_hist)+epsilon, label='Squared Error')
+            plt.yscale('log')
+            plt.title('Tracking Error')
+            plt.legend()
+            
+            # 控制输入
+            plt.subplot(2, 2, 3)
+            plt.plot(t[:k+1], np.array(u_hist)[:,0], label='w1')
+            plt.plot(t[:k+1], np.array(u_hist)[:,1], label='w2')
+            plt.ylim([-3.5, 3.5])
+            plt.title('Control Inputs')
+            plt.legend()
+            
+            # 扰动估计
+            d_hat_history = mpc.obs.get_history()
+            plt.subplot(2, 2, 4)
+            plt.plot(t[:k+1], d_hat_history[:,0], label='d_x')
+            plt.plot(t[:k+1], d_hat_history[:,1], label='d_y')
+            plt.title('Disturbance Estimation')
+            plt.legend()
+            
+            plt.tight_layout()
+            plt.pause(0.001)
 
-plt.ioff()
-plt.show()
+    plt.ioff()
+    plt.show()
